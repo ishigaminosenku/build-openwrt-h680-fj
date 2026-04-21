@@ -3,14 +3,19 @@ name: Build OpenWrt HG680FJ Custom
 on:
   workflow_dispatch:
 
+env:
+  KERNEL_URL: https://github.com/ophub/kernel/releases/download/kernel_stable/6.18.23.tar.gz
+  ROOTFS_URL: https://downloads.openwrt.org/releases/25.12.2/targets/armsr/armv8/openwrt-25.12.2-armsr-armv8-rootfs.tar.gz
+  DTB_NAME: meson-gxl-s905x-p212.dtb
+
 jobs:
   build:
-    runs-on: ubuntu-24.04 # Gunakan versi terbaru agar support zstd secara native
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install Tools
+      - name: Install Dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y wget curl tar zstd
@@ -18,46 +23,53 @@ jobs:
       - name: Download Components
         run: |
           mkdir -p build/boot build/rootfs_data
-          
-          # 1. Download Rootfs OpenWrt 25.12.2
-          curl -L https://downloads.openwrt.org/releases/25.12.2/targets/armsr/armv8/openwrt-25.12.2-armsr-armv8-rootfs.tar.gz -o rootfs.tar.gz
-          
-          # 2. Download Kernel Ophub 6.18.23
-          curl -L https://github.com/ophub/kernel/releases/download/kernel_stable/6.18.23.tar.gz -o kernel.tar.gz
+          # Download Rootfs
+          curl -L ${{ env.ROOTFS_URL }} -o rootfs.tar.gz
+          # Download Kernel Bundle
+          curl -L ${{ env.KERNEL_URL }} -o kernel_bundle.tar.gz
 
-      - name: Extract and Patch
+      - name: Extract and Patch System
         run: |
-          # Ekstrak Rootfs
+          # 1. Ekstrak Rootfs OpenWrt
           sudo tar -xzvf rootfs.tar.gz -C build/rootfs_data
           
-          # Ekstrak Kernel
-          mkdir kernel_tmp
-          tar -xzvf kernel.tar.gz -C kernel_tmp
+          # 2. Ekstrak Bundle Kernel Utama
+          mkdir -p kernel_raw
+          tar -xzvf kernel_bundle.tar.gz -C kernel_raw
           
-          # Inject Modul Kernel ke Rootfs
-          # Asumsi di dalam kernel.tar.gz ada folder 'lib/modules'
-          if [ -d "kernel_tmp/lib/modules" ]; then
-            sudo cp -r kernel_tmp/lib/modules/* build/rootfs_data/lib/modules/
-          fi
+          # 3. Ekstrak Sub-Paket (Struktur Ophub: 6.18.23/boot-...)
+          mkdir -p kernel_unpacked/boot kernel_unpacked/modules kernel_unpacked/dtb
           
-          # Siapkan folder Boot (EFI)
-          # Salin kernel (Image/vmlinuz) dan DTB S905X (HG680-FJ)
-          sudo cp kernel_tmp/boot/vmlinuz-* build/boot/vmlinuz
-          sudo cp kernel_tmp/boot/uEnv.txt build/boot/uEnv.txt || true
+          # Cari file di dalam folder versi
+          tar -xzvf kernel_raw/6.18.23/boot-6.18.23-ophub.tar.gz -C kernel_unpacked/boot
+          tar -xzvf kernel_raw/6.18.23/modules-6.18.23-ophub.tar.gz -C kernel_unpacked/modules
+          tar -xzvf kernel_raw/6.18.23/dtb-amlogic-6.18.23-ophub.tar.gz -C kernel_unpacked/dtb
           
-          # Salin DTB spesifik HG680-FJ (Meson GXL S905X P212)
-          mkdir -p build/boot/dtb/amlogic
-          sudo cp kernel_tmp/boot/dtb/amlogic/meson-gxl-s905x-p212.dtb build/boot/dtb/amlogic/
+          # 4. Inject Kernel & DTB ke Boot Folder
+          # Mengambil file kernel (biasanya bernama vmlinuz atau Image)
+          sudo cp kernel_unpacked/boot/vmlinuz* build/boot/vmlinuz
+          sudo cp kernel_unpacked/dtb/amlogic/${{ env.DTB_NAME }} build/boot/dtb.img
+          
+          # 5. Inject Modules ke Rootfs
+          # Penting agar Driver Wi-Fi/LAN terbaca
+          sudo cp -r kernel_unpacked/modules/lib/modules/* build/rootfs_data/lib/modules/
+          
+          # 6. Buat uEnv.txt agar STB tahu file mana yang harus di-load
+          cat <<EOF | sudo tee build/boot/uEnv.txt
+          LINUX=/vmlinuz
+          FDT=/dtb.img
+          APPEND=root=PARTUUID=eb095049-02 rootwait console=ttyAML0,115200 console=tty1 selinux=0
+          EOF
 
-      - name: Package to IMG
+      - name: Organize Artifacts
         run: |
-          echo "Proses pembuatan .img menggunakan skrip pemaket..."
-          # Catatan: Untuk membuat file .img yang bootable di STB, 
-          # Anda butuh skrip tambahan seperti 'mk_s905x.sh'.
-          # Tanpa skrip itu, Anda hanya mendapatkan rootfs yang sudah dipatch.
+          mkdir -p output/boot output/rootfs
+          sudo cp -r build/boot/* output/boot/
+          # Mengompres kembali rootfs yang sudah dipatch
+          cd build/rootfs_data && sudo tar -czvf ../../output/rootfs/rootfs-patched.tar.gz .
 
-      - name: Upload Result
+      - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: OpenWrt-HG680FJ-Injected
-          path: build/rootfs_data/
+          name: OpenWrt-HG680FJ-6.18.23-Custom
+          path: output/
