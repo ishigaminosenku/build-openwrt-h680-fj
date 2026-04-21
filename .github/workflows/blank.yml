@@ -1,60 +1,86 @@
-name: Build OpenWrt HG680-FJ (Flashable Image)
+name: Build OpenWrt HG680-FJ (Ophub Kernel)
 
 on:
   workflow_dispatch:
 
 env:
+  # URL Image Builder Resmi
   IB_URL: https://downloads.openwrt.org/releases/25.12.2/targets/armsr/armv8/openwrt-imagebuilder-25.12.2-armsr-armv8.Linux-x86_64.tar.zst
+  # URL Kernel Ophub
   KERNEL_URL: https://github.com/ophub/kernel/releases/download/kernel_stable/6.18.23.tar.gz
-  # Tambahkan paket esensial untuk STB
-  PACKAGES: "luci luci-app-openclash luci-app-vssr kmod-usb-net-asix-ax88179 kmod-usb-storage kmod-fs-ext4 kmod-amlogic-fdu kmod-usb-net-rtl8152"
+  # Daftar Paket Aplikasi (Sesuaikan kebutuhan)
+  PACKAGES: "luci luci-i18n-base-id luci-app-openclash luci-app-vssr kmod-usb-net-asix-ax88179 kmod-usb-storage kmod-fs-ext4 kmod-usb-net-rtl8152"
 
 jobs:
   build:
     runs-on: ubuntu-22.04
     steps:
-      - name: Checkout
+      - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Setup Environment
+      - name: Install Dependencies
         run: |
           sudo apt update
           sudo apt install -y build-essential zstd wget rsync gawk gettext libssl-dev qemu-utils
 
-      - name: Prepare Image Builder
+      - name: Download & Extract Image Builder
         run: |
           wget $IB_URL -O ib.tar.zst
           mkdir ib && tar -I zstd -xvf ib.tar.zst -C ib --strip-components=1
 
-      - name: Integrate Ophub Kernel
+      - name: Download & Prepare Custom Kernel
         run: |
-          wget $KERNEL_URL -O kernel.tar.gz
-          mkdir kernel_data && tar -xvf kernel.tar.gz -C kernel_data
-          # Memindahkan Kernel Image dan DTB ke folder boot Image Builder
-          cp -rf kernel_data/boot/* ib/target/linux/armsr/base-files/boot/
-          # Memindahkan modul kernel agar kmod bisa diload
-          mkdir -p ib/target/linux/armsr/base-files/lib/modules/6.18.23
-          cp -rf kernel_data/lib/modules/* ib/target/linux/armsr/base-files/lib/modules/
+          wget $KERNEL_URL -O kernel_main.tar.gz
+          mkdir kernel_tmp && tar -xvf kernel_main.tar.gz -C kernel_tmp --strip-components=1
+          
+          # Buat folder kerja untuk ekstraksi tahap 2
+          mkdir -p kernel_final/boot kernel_final/modules kernel_final/dtb
+          
+          # Ekstrak komponen kernel dari Ophub
+          tar -xvf kernel_tmp/boot-6.18.23-ophub.tar.gz -C kernel_final/boot
+          tar -xvf kernel_tmp/dtb-amlogic-6.18.23-ophub.tar.gz -C kernel_final/dtb
+          tar -xvf kernel_tmp/modules-6.18.23-ophub.tar.gz -C kernel_final/modules
 
-      - name: Build Flashable Image
+          # Buat struktur direktori 'files' untuk Image Builder
+          # Folder ini akan digabung ke dalam rootfs (/) hasil build
+          mkdir -p ib/files/boot/dtb/amlogic
+          mkdir -p ib/files/lib/modules/6.18.23-ophub
+
+          # Salin Kernel Image dan DTB ke folder boot
+          cp -rf kernel_final/boot/* ib/files/boot/
+          cp -rf kernel_final/dtb/* ib/files/boot/dtb/amlogic/
+          
+          # Salin Modul Kernel agar driver hardware jalan
+          cp -rf kernel_final/modules/* ib/files/lib/modules/6.18.23-ophub/
+
+      - name: Create Boot Configuration (uEnv.txt)
+        run: |
+          # Membuat uEnv.txt agar STB tahu cara booting menggunakan kernel baru
+          # Gunakan DTB p212 untuk HG680-FJ (S905X)
+          cat <<EOF > ib/files/boot/uEnv.txt
+          LINUX=/boot/vmlinuz-6.18.23-ophub
+          INITRD=/boot/uInitrd
+          FDT=/boot/dtb/amlogic/meson-gxl-s905x-p212.dtb
+          APPEND=root=LABEL=ROOTFS rootwait console=ttyAML0,115200n8 console=tty0 no_console_suspend
+          EOF
+
+      - name: Build OpenWrt Image
         run: |
           cd ib
-          # Membuat folder files jika kamu ingin menyisipkan config manual
-          mkdir -p files/etc/config
-          
+          # Jalankan build dengan menyertakan folder 'files'
           make image PROFILE="generic" PACKAGES="$PACKAGES" FILES="files"
-          
-          # Mengubah output menjadi format .img jika diperlukan
-          # (Biasanya IB armsr menghasilkan file .img.gz secara default)
 
-      - name: Organize Artifacts
+      - name: Prepare Artifacts for Flashing
         run: |
           mkdir output
-          cp ib/bin/targets/armsr/armv8/*.img.gz output/
-          cd output && gunzip *.img.gz # Ekstrak agar BalenaEtcher bisa langsung pakai .img
+          # Pindahkan file .img.gz hasil build ke folder output
+          find ib/bin/targets/armsr/armv8/ -name "*.img.gz" -exec cp {} output/ \;
+          cd output
+          # Ekstrak agar user mendapatkan file .img mentah siap flash
+          gunzip *.img.gz
 
-      - name: Upload to Actions
+      - name: Upload Flashable Image
         uses: actions/upload-artifact@v4
         with:
-          name: OpenWrt_HG680FJ_Flashable
+          name: OpenWrt_HG680FJ_6.18.23
           path: output/*.img
