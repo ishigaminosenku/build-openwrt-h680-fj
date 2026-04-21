@@ -1,4 +1,4 @@
-name: Build OpenWrt HG680-FJ (Fixed Packages)
+name: Build OpenWrt HG680-FJ (Auto-Latest OpenClash)
 
 on:
   workflow_dispatch:
@@ -6,8 +6,8 @@ on:
 env:
   IB_URL: https://downloads.openwrt.org/releases/25.12.2/targets/armsr/armv8/openwrt-imagebuilder-25.12.2-armsr-armv8.Linux-x86_64.tar.zst
   KERNEL_URL: https://github.com/ophub/kernel/releases/download/kernel_stable/6.18.23.tar.gz
-  # Tambahkan '-' sebelum dnsmasq untuk menghindari konflik dengan dnsmasq-full (syarat OpenClash)
-  PACKAGES: "luci -dnsmasq dnsmasq-full luci-app-openclash luci-app-vssr kmod-usb-net-asix-ax88179 kmod-usb-storage kmod-fs-ext4 kmod-usb-net-rtl8152"
+  # Daftar paket esensial sesuai instruksi GitHub OpenClash (untuk iptables/ipk)
+  PACKAGES: "luci -dnsmasq dnsmasq-full bash iptables curl ca-bundle ipset ip-full iptables-mod-tproxy iptables-mod-extra ruby ruby-yaml kmod-tun kmod-inet-diag unzip luci-compat luci-base luci-app-openclash kmod-usb-net-asix-ax88179 kmod-usb-storage kmod-fs-ext4"
 
 jobs:
   build:
@@ -19,33 +19,31 @@ jobs:
       - name: Install Dependencies
         run: |
           sudo apt update
-          sudo apt install -y build-essential zstd wget rsync gawk gettext libssl-dev qemu-utils
+          sudo apt install -y build-essential zstd wget rsync gawk gettext libssl-dev qemu-utils jq
 
       - name: Download & Extract Image Builder
         run: |
           wget $IB_URL -O ib.tar.zst
           mkdir ib && tar -I zstd -xvf ib.tar.zst -C ib --strip-components=1
 
-      - name: Inject Third-Party Packages
+      - name: Auto-Fetch Latest OpenClash IPK
         run: |
           cd ib
           mkdir -p packages
+          # Menggunakan GitHub API untuk mendapatkan link download .ipk terbaru secara dinamis
+          DOWNLOAD_URL=$(curl -s https://api.github.com/repos/vernesong/OpenClash/releases/latest | jq -r '.assets[] | select(.name | endswith(".ipk")) | .browser_download_url' | head -n 1)
+          echo "Downloading OpenClash from: $DOWNLOAD_URL"
+          wget --no-check-certificate "$DOWNLOAD_URL" -P packages/
           
-          # Download OpenClash .ipk langsung dari source resmi (Contoh versi terbaru)
-          # Kita gunakan --no-check-certificate karena kadang ada masalah SSL di runner
-          wget --no-check-certificate https://github.com/vernesong/OpenClash/releases/download/v0.46.062-beta/luci-app-openclash_0.46.062-beta_all.ipk -P packages/
-          
-          # Catatan: Untuk VSSR, pastikan URL .ipk valid atau ganti dengan repo jika tersedia
-          # Jika tidak ada link direct, kita tambahkan repo sebagai fallback
-          echo "src/gz custom_luci https://downloads.openwrt.org/releases/25.12.2/packages/aarch64_generic/luci" >> repositories.conf
+          # Matikan signature check agar paket lokal bisa terinstal
           sed -i 's/option check_signature/ # option check_signature/g' repositories.conf
 
       - name: Download & Prepare Custom Kernel
         run: |
           wget $KERNEL_URL -O kernel_main.tar.gz
           mkdir kernel_tmp && tar -xvf kernel_main.tar.gz -C kernel_tmp --strip-components=1
-          
           mkdir -p kernel_final/boot kernel_final/modules kernel_final/dtb
+          
           tar -xvf kernel_tmp/boot-6.18.23-ophub.tar.gz -C kernel_final/boot
           tar -xvf kernel_tmp/dtb-amlogic-6.18.23-ophub.tar.gz -C kernel_final/dtb
           tar -xvf kernel_tmp/modules-6.18.23-ophub.tar.gz -C kernel_final/modules
@@ -68,7 +66,6 @@ jobs:
       - name: Build OpenWrt Image
         run: |
           cd ib
-          # Gunakan 'make image' - Image Builder akan otomatis mencari file .ipk di folder packages/
           make image PROFILE="generic" PACKAGES="$PACKAGES" FILES="files"
 
       - name: Prepare Artifacts
@@ -80,5 +77,5 @@ jobs:
       - name: Upload Flashable Image
         uses: actions/upload-artifact@v4
         with:
-          name: OpenWrt_HG680FJ_Fixed
+          name: OpenWrt_HG680FJ_AutoLatest
           path: output/*.img
