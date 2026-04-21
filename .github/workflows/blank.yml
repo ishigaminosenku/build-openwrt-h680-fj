@@ -1,4 +1,4 @@
-name: Build OpenWrt HG680-FJ (Basic System)
+name: Build OpenWrt HG680-FJ (Ultra Stable)
 
 on:
   workflow_dispatch:
@@ -6,8 +6,8 @@ on:
 env:
   IB_URL: https://downloads.openwrt.org/releases/25.12.2/targets/armsr/armv8/openwrt-imagebuilder-25.12.2-armsr-armv8.Linux-x86_64.tar.zst
   KERNEL_URL: https://github.com/ophub/kernel/releases/download/kernel_stable/6.18.23.tar.gz
-  # Hanya paket dasar: LuCI, Driver USB LAN (RTL/Asix), dan File System
-  PACKAGES: "luci kmod-usb-net-asix-ax88179 kmod-usb-net-asix-ax88179-100 kmod-usb-net-rtl8152 kmod-usb-storage kmod-fs-ext4 kmod-fs-vfat kmod-nls-cp437 kmod-nls-iso8855"
+  # Hanya menggunakan paket esensial yang pasti tersedia di repo resmi
+  PACKAGES: "luci kmod-usb-net-asix-ax88179 kmod-usb-net-rtl8152 kmod-usb-storage kmod-fs-ext4 kmod-fs-vfat kmod-nls-cp437 kmod-nls-iso8859-1"
 
 jobs:
   build:
@@ -36,7 +36,7 @@ jobs:
           tar -xvf kernel_tmp/dtb-amlogic-6.18.23-ophub.tar.gz -C kernel_final/dtb
           tar -xvf kernel_tmp/modules-6.18.23-ophub.tar.gz -C kernel_final/modules
 
-          # Integrasi ke folder 'files' agar masuk ke rootfs
+          # Integrasi ke folder 'files'
           mkdir -p ib/files/boot/dtb/amlogic
           mkdir -p ib/files/lib/modules/6.18.23-ophub
           cp -rf kernel_final/boot/* ib/files/boot/
@@ -55,7 +55,7 @@ jobs:
       - name: Build OpenWrt Image
         run: |
           cd ib
-          # Build sistem dasar
+          # Build sistem dasar tanpa aplikasi tambahan yang berisiko error
           make image PROFILE="generic" PACKAGES="$PACKAGES" FILES="files"
 
       - name: Prepare Artifacts
@@ -68,5 +68,5 @@ jobs:
       - name: Upload Flashable Image
         uses: actions/upload-artifact@v4
         with:
-          name: OpenWrt_HG680FJ_Basic
+          name: OpenWrt_HG680FJ_Basic_Stable
           path: output/*.img
