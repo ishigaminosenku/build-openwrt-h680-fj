@@ -1,98 +1,60 @@
-name: Build OpenWrt HG680FJ Custom Final
+name: Build OpenWrt HG680-FJ (Flashable Image)
 
 on:
   workflow_dispatch:
 
 env:
+  IB_URL: https://downloads.openwrt.org/releases/25.12.2/targets/armsr/armv8/openwrt-imagebuilder-25.12.2-armsr-armv8.Linux-x86_64.tar.zst
   KERNEL_URL: https://github.com/ophub/kernel/releases/download/kernel_stable/6.18.23.tar.gz
-  ROOTFS_URL: https://downloads.openwrt.org/releases/25.12.2/targets/armsr/armv8/openwrt-25.12.2-armsr-armv8-rootfs.tar.gz
-  DTB_NAME: meson-gxl-s905x-p212.dtb
+  # Tambahkan paket esensial untuk STB
+  PACKAGES: "luci luci-app-openclash luci-app-vssr kmod-usb-net-asix-ax88179 kmod-usb-storage kmod-fs-ext4 kmod-amlogic-fdu kmod-usb-net-rtl8152"
 
 jobs:
   build:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-22.04
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install Dependencies
+      - name: Setup Environment
         run: |
-          sudo apt-get update
-          sudo apt-get install -y wget curl tar zstd
+          sudo apt update
+          sudo apt install -y build-essential zstd wget rsync gawk gettext libssl-dev qemu-utils
 
-      - name: Prepare Workspace
+      - name: Prepare Image Builder
         run: |
-          sudo mkdir -pv build/boot build/rootfs_data output/boot output/rootfs
-          curl -L ${{ env.ROOTFS_URL }} -o rootfs.tar.gz
-          curl -L ${{ env.KERNEL_URL }} -o kernel_bundle.tar.gz
+          wget $IB_URL -O ib.tar.zst
+          mkdir ib && tar -I zstd -xvf ib.tar.zst -C ib --strip-components=1
 
-      - name: Extract and Patch System
+      - name: Integrate Ophub Kernel
         run: |
-          # 1. Ekstrak Rootfs
-          sudo mkdir -pv build/rootfs_data build/boot
-          sudo tar -xzvf rootfs.tar.gz -C build/rootfs_data
-          
-          # 2. Ekstrak Kernel Bundle
-          mkdir -p kernel_raw
-          tar -xzvf kernel_bundle.tar.gz -C kernel_raw
-          
-          # 3. Ekstrak Sub-Paket Kernel
-          mkdir -p unpacked
-          tar -xzvf kernel_raw/6.18.23/boot-6.18.23-ophub.tar.gz -C unpacked/ || true
-          tar -xzvf kernel_raw/6.18.23/modules-6.18.23-ophub.tar.gz -C unpacked/ || true
-          tar -xzvf kernel_raw/6.18.23/dtb-amlogic-6.18.23-ophub.tar.gz -C unpacked/ || true
-          
-          # Debug: Lihat struktur folder hasil ekstrak jika terjadi error lagi
-          echo "Listing unpacked directory structure:"
-          find unpacked -maxdepth 3
-          
-          # 4. Salin Kernel & DTB
-          KRN_SRC=$(find unpacked -name "vmlinuz*" | head -n 1)
-          DTB_SRC=$(find unpacked -name "${{ env.DTB_NAME }}" | head -n 1)
-          
-          sudo cp -v "$KRN_SRC" build/boot/vmlinuz
-          sudo cp -v "$DTB_SRC" build/boot/dtb.img
-          
-          # 5. Salin Modules (Metode Backup jika lib/modules tidak ditemukan)
-          # Mencari folder yang mengandung file .ko (kernel object)
-          MOD_PATH=$(find unpacked -name "*.ko" | head -n 1 | xargs dirname | xargs dirname | xargs dirname)
-          
-          # Jika MOD_PATH kosong, coba cari manual lib/modules
-          if [ -z "$MOD_PATH" ] || [ ! -d "$MOD_PATH" ]; then
-            MOD_PATH=$(find unpacked -type d -name "modules" | grep "lib/modules" | head -n 1)
-          fi
+          wget $KERNEL_URL -O kernel.tar.gz
+          mkdir kernel_data && tar -xvf kernel.tar.gz -C kernel_data
+          # Memindahkan Kernel Image dan DTB ke folder boot Image Builder
+          cp -rf kernel_data/boot/* ib/target/linux/armsr/base-files/boot/
+          # Memindahkan modul kernel agar kmod bisa diload
+          mkdir -p ib/target/linux/armsr/base-files/lib/modules/6.18.23
+          cp -rf kernel_data/lib/modules/* ib/target/linux/armsr/base-files/lib/modules/
 
-          if [ -d "$MOD_PATH" ]; then
-            echo "Found modules at: $MOD_PATH"
-            sudo mkdir -pv build/rootfs_data/lib/modules
-            sudo cp -rv "$MOD_PATH"/* build/rootfs_data/lib/modules/
-          else
-            # Opsi terakhir: cari folder apa saja yang ada di dalam unpacked yang berisi angka versi kernel
-            FALLBACK_MOD=$(find unpacked -type d -name "6.18.23*" | head -n 1)
-            if [ -d "$FALLBACK_MOD" ]; then
-                sudo mkdir -pv build/rootfs_data/lib/modules/6.18.23-ophub
-                sudo cp -rv "$FALLBACK_MOD"/* build/rootfs_data/lib/modules/6.18.23-ophub/
-            else
-                echo "ERROR: Folder modules benar-benar tidak ditemukan!" && exit 1
-            fi
-          fi
-          
-          # 6. Konfigurasi Boot (uEnv.txt)
-          cat <<EOF | sudo tee build/boot/uEnv.txt
-          LINUX=/vmlinuz
-          FDT=/dtb.img
-          APPEND=root=PARTUUID=eb095049-02 rootwait console=ttyAML0,115200 console=tty1 selinux=0
-          EOF
-
-      - name: Packaging Artifacts
+      - name: Build Flashable Image
         run: |
-          # Salin hasil boot
-          sudo cp -rv build/boot/* output/boot/
-          # Kompres Rootfs yang sudah di-patch
-          cd build/rootfs_data && sudo tar -czvf ../../output/rootfs/rootfs-patched.tar.gz .
+          cd ib
+          # Membuat folder files jika kamu ingin menyisipkan config manual
+          mkdir -p files/etc/config
+          
+          make image PROFILE="generic" PACKAGES="$PACKAGES" FILES="files"
+          
+          # Mengubah output menjadi format .img jika diperlukan
+          # (Biasanya IB armsr menghasilkan file .img.gz secara default)
 
-      - name: Upload Artifact
+      - name: Organize Artifacts
+        run: |
+          mkdir output
+          cp ib/bin/targets/armsr/armv8/*.img.gz output/
+          cd output && gunzip *.img.gz # Ekstrak agar BalenaEtcher bisa langsung pakai .img
+
+      - name: Upload to Actions
         uses: actions/upload-artifact@v4
         with:
-          name: OpenWrt-HG680FJ-Final
-          path: output/
+          name: OpenWrt_HG680FJ_Flashable
+          path: output/*.img
