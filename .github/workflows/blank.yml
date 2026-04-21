@@ -1,4 +1,4 @@
-name: Build OpenWrt HG680-FJ (Ultra Stable)
+name: Build OpenWrt HG680-FJ (Final RootFS Fix)
 
 on:
   workflow_dispatch:
@@ -6,7 +6,6 @@ on:
 env:
   IB_URL: https://downloads.openwrt.org/releases/25.12.2/targets/armsr/armv8/openwrt-imagebuilder-25.12.2-armsr-armv8.Linux-x86_64.tar.zst
   KERNEL_URL: https://github.com/ophub/kernel/releases/download/kernel_stable/6.18.23.tar.gz
-  # Hanya menggunakan paket esensial yang pasti tersedia di repo resmi
   PACKAGES: "luci kmod-usb-net-asix-ax88179 kmod-usb-net-rtl8152 kmod-usb-storage kmod-fs-ext4 kmod-fs-vfat kmod-nls-cp437 kmod-nls-iso8859-1"
 
 jobs:
@@ -30,18 +29,27 @@ jobs:
         run: |
           wget $KERNEL_URL -O kernel_main.tar.gz
           mkdir kernel_tmp && tar -xvf kernel_main.tar.gz -C kernel_tmp --strip-components=1
-          
           mkdir -p kernel_final/boot kernel_final/modules kernel_final/dtb
           tar -xvf kernel_tmp/boot-6.18.23-ophub.tar.gz -C kernel_final/boot
           tar -xvf kernel_tmp/dtb-amlogic-6.18.23-ophub.tar.gz -C kernel_final/dtb
           tar -xvf kernel_tmp/modules-6.18.23-ophub.tar.gz -C kernel_final/modules
 
-          # Integrasi ke folder 'files'
           mkdir -p ib/files/boot/dtb/amlogic
           mkdir -p ib/files/lib/modules/6.18.23-ophub
           cp -rf kernel_final/boot/* ib/files/boot/
           cp -rf kernel_final/dtb/* ib/files/boot/dtb/amlogic/
           cp -rf kernel_final/modules/* ib/files/lib/modules/6.18.23-ophub/
+
+      - name: Fix Permissions & Increase Partition Size
+        run: |
+          cd ib
+          # Pastikan semua file di folder 'files' memiliki hak akses yang benar
+          chmod -R 755 files/
+          
+          # Paksa Image Builder memperbesar ukuran partisi ROOTFS agar kernel & modul muat (512MB)
+          sed -i 's/CONFIG_TARGET_ROOTFS_PARTSIZE=.*/CONFIG_TARGET_ROOTFS_PARTSIZE=512/g' .config || echo "CONFIG_TARGET_ROOTFS_PARTSIZE=512" >> .config
+          # Set kernel partition size (64MB)
+          sed -i 's/CONFIG_TARGET_KERNEL_PARTSIZE=.*/CONFIG_TARGET_KERNEL_PARTSIZE=64/g' .config || echo "CONFIG_TARGET_KERNEL_PARTSIZE=64" >> .config
 
       - name: Create Boot Configuration (uEnv.txt)
         run: |
@@ -55,7 +63,8 @@ jobs:
       - name: Build OpenWrt Image
         run: |
           cd ib
-          # Build sistem dasar tanpa aplikasi tambahan yang berisiko error
+          # Menambahkan entri manual ke .config untuk memastikan ukuran partisi diterapkan
+          echo "CONFIG_TARGET_ROOTFS_PARTSIZE=512" >> .config
           make image PROFILE="generic" PACKAGES="$PACKAGES" FILES="files"
 
       - name: Prepare Artifacts
