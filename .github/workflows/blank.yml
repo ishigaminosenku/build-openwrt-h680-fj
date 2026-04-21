@@ -1,4 +1,4 @@
-name: Build OpenWrt HG680-FJ (Ophub Kernel)
+name: Build OpenWrt HG680-FJ (Fixed Packages)
 
 on:
   workflow_dispatch:
@@ -6,8 +6,8 @@ on:
 env:
   IB_URL: https://downloads.openwrt.org/releases/25.12.2/targets/armsr/armv8/openwrt-imagebuilder-25.12.2-armsr-armv8.Linux-x86_64.tar.zst
   KERNEL_URL: https://github.com/ophub/kernel/releases/download/kernel_stable/6.18.23.tar.gz
-  # Daftar paket (luci-i18n-base-id diganti ke luci-i18n-base-id jika tersedia, atau luci-i18n-opkg-id)
-  PACKAGES: "luci luci-app-openclash luci-app-vssr kmod-usb-net-asix-ax88179 kmod-usb-storage kmod-fs-ext4 kmod-usb-net-rtl8152"
+  # Tambahkan '-' sebelum dnsmasq untuk menghindari konflik dengan dnsmasq-full (syarat OpenClash)
+  PACKAGES: "luci -dnsmasq dnsmasq-full luci-app-openclash luci-app-vssr kmod-usb-net-asix-ax88179 kmod-usb-storage kmod-fs-ext4 kmod-usb-net-rtl8152"
 
 jobs:
   build:
@@ -26,23 +26,25 @@ jobs:
           wget $IB_URL -O ib.tar.zst
           mkdir ib && tar -I zstd -xvf ib.tar.zst -C ib --strip-components=1
 
-      - name: Add Third-Party Repositories
+      - name: Inject Third-Party Packages
         run: |
           cd ib
-          # Menambahkan Repo OpenClash & Dependency-nya agar 'make image' bisa mendownload paket tersebut
-          echo "src/gz openclash https://raw.githubusercontent.com/vernesong/OpenClash/master/core-install.sh" >> repositories.conf
-          # Menambahkan repo cadangan untuk paket umum pihak ketiga (opsional)
-          echo "src/gz custom_repo https://downloads.openwrt.org/releases/25.12.2/packages/aarch64_generic/luci" >> repositories.conf
+          mkdir -p packages
           
-          # UPDATE: Karena OpenClash/VSSR sering butuh depedensi khusus, 
-          # terkadang lebih aman mendownload .ipk langsung jika repo tidak stabil.
-          # Untuk saat ini kita coba paksa tambahkan arsitektur yang kompatibel:
+          # Download OpenClash .ipk langsung dari source resmi (Contoh versi terbaru)
+          # Kita gunakan --no-check-certificate karena kadang ada masalah SSL di runner
+          wget --no-check-certificate https://github.com/vernesong/OpenClash/releases/download/v0.46.062-beta/luci-app-openclash_0.46.062-beta_all.ipk -P packages/
+          
+          # Catatan: Untuk VSSR, pastikan URL .ipk valid atau ganti dengan repo jika tersedia
+          # Jika tidak ada link direct, kita tambahkan repo sebagai fallback
+          echo "src/gz custom_luci https://downloads.openwrt.org/releases/25.12.2/packages/aarch64_generic/luci" >> repositories.conf
           sed -i 's/option check_signature/ # option check_signature/g' repositories.conf
 
       - name: Download & Prepare Custom Kernel
         run: |
           wget $KERNEL_URL -O kernel_main.tar.gz
           mkdir kernel_tmp && tar -xvf kernel_main.tar.gz -C kernel_tmp --strip-components=1
+          
           mkdir -p kernel_final/boot kernel_final/modules kernel_final/dtb
           tar -xvf kernel_tmp/boot-6.18.23-ophub.tar.gz -C kernel_final/boot
           tar -xvf kernel_tmp/dtb-amlogic-6.18.23-ophub.tar.gz -C kernel_final/dtb
@@ -66,19 +68,17 @@ jobs:
       - name: Build OpenWrt Image
         run: |
           cd ib
-          # Catatan: Jika luci-i18n-base-id tetap error, hapus dari list PACKAGES 
-          # karena tidak semua versi OpenWrt menyediakan terjemahan ID secara lengkap.
+          # Gunakan 'make image' - Image Builder akan otomatis mencari file .ipk di folder packages/
           make image PROFILE="generic" PACKAGES="$PACKAGES" FILES="files"
 
-      - name: Prepare Artifacts for Flashing
+      - name: Prepare Artifacts
         run: |
           mkdir output
           find ib/bin/targets/armsr/armv8/ -name "*.img.gz" -exec cp {} output/ \;
-          cd output
-          gunzip *.img.gz
+          cd output && gunzip *.img.gz
 
       - name: Upload Flashable Image
         uses: actions/upload-artifact@v4
         with:
-          name: OpenWrt_HG680FJ_6.18.23
+          name: OpenWrt_HG680FJ_Fixed
           path: output/*.img
