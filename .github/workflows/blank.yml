@@ -1,4 +1,4 @@
-name: Build OpenWrt HG680FJ Custom
+name: Build OpenWrt HG680FJ Custom Final
 
 on:
   workflow_dispatch:
@@ -20,63 +20,60 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y wget curl tar zstd
 
-      - name: Download Components
+      - name: Prepare Workspace
         run: |
-          mkdir -p build/boot build/rootfs_data
-          # Download Rootfs
+          sudo mkdir -pv build/boot build/rootfs_data output/boot output/rootfs
           curl -L ${{ env.ROOTFS_URL }} -o rootfs.tar.gz
-          # Download Kernel Bundle
           curl -L ${{ env.KERNEL_URL }} -o kernel_bundle.tar.gz
 
       - name: Extract and Patch System
         run: |
-          # 1. Ekstrak Rootfs OpenWrt
-          sudo mkdir -pv build/rootfs_data build/boot
+          # 1. Ekstrak Rootfs
           sudo tar -xzvf rootfs.tar.gz -C build/rootfs_data
           
-          # 2. Ekstrak Bundle Kernel Utama
+          # 2. Ekstrak Kernel Bundle
           mkdir -p kernel_raw
           tar -xzvf kernel_bundle.tar.gz -C kernel_raw
           
-          # 3. Ekstrak Sub-Paket
-          mkdir -p kernel_unpacked/boot kernel_unpacked/modules kernel_unpacked/dtb
-          tar -xzvf kernel_raw/6.18.23/boot-6.18.23-ophub.tar.gz -C kernel_unpacked/boot
-          tar -xzvf kernel_raw/6.18.23/modules-6.18.23-ophub.tar.gz -C kernel_unpacked/modules
-          tar -xzvf kernel_raw/6.18.23/dtb-amlogic-6.18.23-ophub.tar.gz -C kernel_unpacked/dtb
+          # 3. Ekstrak Sub-Paket Kernel (Struktur Berlapis)
+          mkdir -p unpacked
+          tar -xzvf kernel_raw/6.18.23/boot-6.18.23-ophub.tar.gz -C unpacked/ || true
+          tar -xzvf kernel_raw/6.18.23/modules-6.18.23-ophub.tar.gz -C unpacked/ || true
+          tar -xzvf kernel_raw/6.18.23/dtb-amlogic-6.18.23-ophub.tar.gz -C unpacked/ || true
           
-          # 4. Sinkronisasi Kernel & DTB
-          sudo cp -v kernel_unpacked/boot/vmlinuz* build/boot/vmlinuz
+          # 4. Salin Kernel & DTB
+          # Cari file kernel dan DTB secara dinamis
+          KRN_SRC=$(find unpacked -name "vmlinuz*" | head -n 1)
+          DTB_SRC=$(find unpacked -name "${{ env.DTB_NAME }}" | head -n 1)
           
-          DTB_PATH=$(find kernel_unpacked/dtb -name "${{ env.DTB_NAME }}")
-          sudo cp -v "$DTB_PATH" build/boot/dtb.img
+          sudo cp -v "$KRN_SRC" build/boot/vmlinuz
+          sudo cp -v "$DTB_SRC" build/boot/dtb.img
           
-          # 5. Sinkronisasi Modules (DIPERBAIKI)
-          # Mencari folder 'lib/modules' di dalam kernel_unpacked/modules
-          MODULES_SRC=$(find kernel_unpacked/modules -type d -path "*/lib/modules" | head -n 1)
-          
-          if [ -d "$MODULES_SRC" ]; then
-            echo "Found modules at: $MODULES_SRC"
-            sudo cp -rv "$MODULES_SRC"/* build/rootfs_data/lib/modules/
+          # 5. Salin Modules (Sangat Krusial)
+          MOD_SRC=$(find unpacked -type d -path "*/lib/modules" | head -n 1)
+          if [ -d "$MOD_SRC" ]; then
+            sudo mkdir -pv build/rootfs_data/lib/modules
+            sudo cp -rv "$MOD_SRC"/* build/rootfs_data/lib/modules/
           else
-            echo "ERROR: Modules folder not found!" && exit 1
+            echo "ERROR: Folder modules tidak ditemukan!" && exit 1
           fi
           
-          # 6. Buat uEnv.txt
+          # 6. Konfigurasi Boot (uEnv.txt)
           cat <<EOF | sudo tee build/boot/uEnv.txt
           LINUX=/vmlinuz
           FDT=/dtb.img
           APPEND=root=PARTUUID=eb095049-02 rootwait console=ttyAML0,115200 console=tty1 selinux=0
           EOF
 
-      - name: Organize Artifacts
+      - name: Packaging Artifacts
         run: |
-          mkdir -p output/boot output/rootfs
-          sudo cp -r build/boot/* output/boot/
-          # Mengompres kembali rootfs yang sudah dipatch
+          # Salin hasil boot
+          sudo cp -rv build/boot/* output/boot/
+          # Kompres Rootfs yang sudah di-patch
           cd build/rootfs_data && sudo tar -czvf ../../output/rootfs/rootfs-patched.tar.gz .
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: OpenWrt-HG680FJ-6.18.23-Custom
+          name: OpenWrt-HG680FJ-Final
           path: output/
