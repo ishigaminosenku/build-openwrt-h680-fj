@@ -1,26 +1,92 @@
-- name: Build OpenWrt Image
+name: Build OpenWrt HG680-FJ (Final Version)
+
+on:
+  workflow_dispatch:
+
+env:
+  IB_URL: https://downloads.openwrt.org/releases/25.12.2/targets/armsr/armv8/openwrt-imagebuilder-25.12.2-armsr-armv8.Linux-x86_64.tar.zst
+  KERNEL_URL: https://github.com/ophub/kernel/releases/download/kernel_stable/6.18.23.tar.gz
+  # Paket dasar stabil untuk STB
+  PACKAGES: "luci kmod-usb-net-asix-ax88179 kmod-usb-net-rtl8152 kmod-usb-storage kmod-fs-ext4 kmod-fs-vfat kmod-nls-cp437 kmod-nls-iso8859-1"
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Install Dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y build-essential zstd wget rsync gawk gettext libssl-dev qemu-utils
+
+      - name: Download & Extract Image Builder
+        run: |
+          wget $IB_URL -O ib.tar.zst
+          mkdir ib && tar -I zstd -xvf ib.tar.zst -C ib --strip-components=1
+
+      - name: Download & Prepare Custom Kernel
+        run: |
+          wget $KERNEL_URL -O kernel_main.tar.gz
+          mkdir kernel_tmp && tar -xvf kernel_main.tar.gz -C kernel_tmp --strip-components=1
+          
+          mkdir -p kernel_final/boot kernel_final/modules kernel_final/dtb
+          tar -xvf kernel_tmp/boot-6.18.23-ophub.tar.gz -C kernel_final/boot
+          tar -xvf kernel_tmp/dtb-amlogic-6.18.23-ophub.tar.gz -C kernel_final/dtb
+          tar -xvf kernel_tmp/modules-6.18.23-ophub.tar.gz -C kernel_final/modules
+
+          # Membuat struktur folder 'files' untuk diinjeksi ke RootFS
+          mkdir -p ib/files/boot/dtb/amlogic
+          mkdir -p ib/files/lib/modules/6.18.23-ophub
+          
+          cp -rf kernel_final/boot/* ib/files/boot/
+          cp -rf kernel_final/dtb/* ib/files/boot/dtb/amlogic/
+          cp -rf kernel_final/modules/* ib/files/lib/modules/6.18.23-ophub/
+
+      - name: Configure Partition & Permissions
         run: |
           cd ib
-          # Kita pastikan ukuran partisi diatur ulang tepat sebelum eksekusi
-          sed -i 's/CONFIG_TARGET_ROOTFS_PARTSIZE=.*/CONFIG_TARGET_ROOTFS_PARTSIZE=512/g' .config
+          # Beri izin akses penuh pada folder files agar tidak error saat build
+          chmod -R 755 files/
+          
+          # Paksa ukuran partisi RootFS ke 512MB agar kernel & modul muat
+          echo "CONFIG_TARGET_ROOTFS_PARTSIZE=512" >> .config
+          echo "CONFIG_TARGET_KERNEL_PARTSIZE=64" >> .config
+
+      - name: Create Boot Configuration (uEnv.txt)
+        run: |
+          # File ini wajib agar STB tahu file mana yang harus di-load saat boot
+          cat <<EOF > ib/files/boot/uEnv.txt
+          LINUX=/boot/vmlinuz-6.18.23-ophub
+          INITRD=/boot/uInitrd
+          FDT=/boot/dtb/amlogic/meson-gxl-s905x-p212.dtb
+          APPEND=root=LABEL=ROOTFS rootwait console=ttyAML0,115200n8 console=tty0 no_console_suspend
+          EOF
+
+      - name: Build OpenWrt Image
+        run: |
+          cd ib
+          # Gunakan PROFILE generic karena armsr bersifat universal untuk armv8
           make image PROFILE="generic" PACKAGES="$PACKAGES" FILES="files"
 
       - name: Prepare Artifacts
         run: |
           mkdir -p output
-          # Mencari semua file image di dalam folder bin secara rekursif
+          # Mencari file hasil build di folder bin secara mendalam
           find ib/bin/targets/armsr/armv8/ -type f \( -name "*.img*" -o -name "*.tar.gz" \) -exec cp {} output/ \;
           
-          # List file yang ditemukan untuk pengecekan di log
+          # Cek isi folder output di log GitHub Actions
+          echo "Daftar file yang ditemukan:"
           ls -R output/
           
-          # Ekstrak jika ada file .gz agar BalenaEtcher bisa langsung pakai
+          # Ekstrak file .gz jika ada agar siap di-flash
           cd output
           for f in *.gz; do [ -f "$f" ] && gunzip "$f"; done || true
 
-      - name: Upload Flashable Image
+      - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: OpenWrt_HG680FJ_Result
-          # Gunakan path yang lebih luas agar pasti terangkat
+          name: OpenWrt_HG680FJ_Flashable
           path: output/*
+          if-no-files-found: error
