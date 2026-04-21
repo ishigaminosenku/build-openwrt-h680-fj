@@ -1,4 +1,4 @@
-name: Build OpenWrt HG680-FJ (Auto-Latest OpenClash)
+name: Build OpenWrt HG680-FJ (Final Fix)
 
 on:
   workflow_dispatch:
@@ -6,8 +6,8 @@ on:
 env:
   IB_URL: https://downloads.openwrt.org/releases/25.12.2/targets/armsr/armv8/openwrt-imagebuilder-25.12.2-armsr-armv8.Linux-x86_64.tar.zst
   KERNEL_URL: https://github.com/ophub/kernel/releases/download/kernel_stable/6.18.23.tar.gz
-  # Daftar paket esensial sesuai instruksi GitHub OpenClash (untuk iptables/ipk)
-  PACKAGES: "luci -dnsmasq dnsmasq-full bash iptables curl ca-bundle ipset ip-full iptables-mod-tproxy iptables-mod-extra ruby ruby-yaml kmod-tun kmod-inet-diag unzip luci-compat luci-base luci-app-openclash kmod-usb-net-asix-ax88179 kmod-usb-storage kmod-fs-ext4"
+  # Paket lengkap sesuai kebutuhan OpenClash + Driver STB
+  PACKAGES: "luci -dnsmasq dnsmasq-full bash iptables curl ca-bundle ipset ip-full iptables-mod-tproxy iptables-mod-extra ruby ruby-yaml kmod-tun kmod-inet-diag unzip luci-compat luci-base luci-app-openclash kmod-usb-net-asix-ax88179 kmod-usb-storage kmod-fs-ext4 kmod-usb-net-rtl8152"
 
 jobs:
   build:
@@ -26,28 +26,35 @@ jobs:
           wget $IB_URL -O ib.tar.zst
           mkdir ib && tar -I zstd -xvf ib.tar.zst -C ib --strip-components=1
 
-      - name: Auto-Fetch Latest OpenClash IPK
+      - name: Auto-Fetch OpenClash & Configure Repos
         run: |
+          # Masuk ke folder ib terlebih dahulu
           cd ib
           mkdir -p packages
-          # Menggunakan GitHub API untuk mendapatkan link download .ipk terbaru secara dinamis
+          
+          # Ambil .ipk terbaru secara otomatis
           DOWNLOAD_URL=$(curl -s https://api.github.com/repos/vernesong/OpenClash/releases/latest | jq -r '.assets[] | select(.name | endswith(".ipk")) | .browser_download_url' | head -n 1)
           echo "Downloading OpenClash from: $DOWNLOAD_URL"
           wget --no-check-certificate "$DOWNLOAD_URL" -P packages/
           
-          # Matikan signature check agar paket lokal bisa terinstal
-          sed -i 's/option check_signature/ # option check_signature/g' repositories.conf
+          # Pastikan file repositories.conf ada, lalu matikan signature check
+          if [ -f "repositories.conf" ]; then
+            sed -i 's/option check_signature/ # option check_signature/g' repositories.conf
+            # Tambahkan repo cadangan untuk dependensi jika diperlukan
+            echo "src/gz custom_generic https://downloads.openwrt.org/releases/25.12.2/packages/aarch64_generic/luci" >> repositories.conf
+          fi
 
       - name: Download & Prepare Custom Kernel
         run: |
           wget $KERNEL_URL -O kernel_main.tar.gz
           mkdir kernel_tmp && tar -xvf kernel_main.tar.gz -C kernel_tmp --strip-components=1
-          mkdir -p kernel_final/boot kernel_final/modules kernel_final/dtb
           
+          mkdir -p kernel_final/boot kernel_final/modules kernel_final/dtb
           tar -xvf kernel_tmp/boot-6.18.23-ophub.tar.gz -C kernel_final/boot
           tar -xvf kernel_tmp/dtb-amlogic-6.18.23-ophub.tar.gz -C kernel_final/dtb
           tar -xvf kernel_tmp/modules-6.18.23-ophub.tar.gz -C kernel_final/modules
 
+          # Integrasi ke folder files
           mkdir -p ib/files/boot/dtb/amlogic
           mkdir -p ib/files/lib/modules/6.18.23-ophub
           cp -rf kernel_final/boot/* ib/files/boot/
@@ -56,6 +63,7 @@ jobs:
 
       - name: Create Boot Configuration (uEnv.txt)
         run: |
+          # Menggunakan DTB meson-gxl-s905x-p212 untuk HG680-FJ
           cat <<EOF > ib/files/boot/uEnv.txt
           LINUX=/boot/vmlinuz-6.18.23-ophub
           INITRD=/boot/uInitrd
@@ -66,16 +74,19 @@ jobs:
       - name: Build OpenWrt Image
         run: |
           cd ib
+          # Build image menggunakan semua paket dan kernel yang sudah disuntikkan
           make image PROFILE="generic" PACKAGES="$PACKAGES" FILES="files"
 
       - name: Prepare Artifacts
         run: |
           mkdir output
+          # Cari file hasil build, pindahkan, dan ekstrak
           find ib/bin/targets/armsr/armv8/ -name "*.img.gz" -exec cp {} output/ \;
-          cd output && gunzip *.img.gz
+          cd output
+          if [ -f *.img.gz ]; then gunzip *.img.gz; fi
 
       - name: Upload Flashable Image
         uses: actions/upload-artifact@v4
         with:
-          name: OpenWrt_HG680FJ_AutoLatest
+          name: OpenWrt_HG680FJ_ReadyToFlash
           path: output/*.img
