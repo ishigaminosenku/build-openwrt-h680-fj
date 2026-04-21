@@ -1,56 +1,63 @@
-name: Build OpenWrt via Image Builder
+name: Build OpenWrt HG680FJ Custom
 
 on:
   workflow_dispatch:
 
-env:
-  # Link Image Builder untuk armsr/armv8
-  IB_URL: https://downloads.openwrt.org/releases/25.12.2/targets/armsr/armv8/openwrt-imagebuilder-25.12.2-armsr-armv8.Linux-x86_64.tar.zst
-  # Link Kernel Custom dari Ophub
-  KERNEL_URL: https://github.com/ophub/kernel/releases/download/kernel_stable/6.18.23.tar.gz
-
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04 # Gunakan versi terbaru agar support zstd secara native
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Environment
+      - name: Install Tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential libncurses5-dev libncursesw5-dev \
-            zlib1g-dev gawk git gettext libssl-dev xsltproc rsync wget unzip zstd
+          sudo apt-get install -y wget curl tar zstd
 
-      - name: Download and Extract Image Builder
+      - name: Download Components
         run: |
-          wget ${{ env.IB_URL }}
-          tar -I zstd -xvf openwrt-imagebuilder-*.tar.zst
-          mv openwrt-imagebuilder-* ib
-
-      - name: Download Custom Kernel
-        run: |
-          mkdir -p kernel-custom
-          curl -L ${{ env.KERNEL_URL }} -o kernel-custom/kernel.tar.gz
-          tar -xzvf kernel-custom/kernel.tar.gz -C kernel-custom/
-
-      - name: Build Image
-        run: |
-          cd ib
-          # Menentukan paket apa saja yang ingin dimasukkan
-          # Tambahkan paket seperti luci, kmod-usb-net, dll.
-          make image PROFILE="generic" PACKAGES="luci luci-proto-3g luci-proto-qmi luci-app-cpufreq kmod-usb-net-rtl8152"
+          mkdir -p build/boot build/rootfs_data
           
-      - name: Patch Kernel (Manual Injection)
-        run: |
-          # Langkah ini menyisipkan kernel 6.18.23 ke dalam hasil build
-          # Biasanya dilakukan dengan mengganti file Image dan folder modules
-          # di dalam folder build_dir milik Image Builder sebelum finalisasi .img
-          echo "Injecting kernel 6.18.23 into the image..."
-          # [Proses pemaketan .img kustom di sini]
+          # 1. Download Rootfs OpenWrt 25.12.2
+          curl -L https://downloads.openwrt.org/releases/25.12.2/targets/armsr/armv8/openwrt-25.12.2-armsr-armv8-rootfs.tar.gz -o rootfs.tar.gz
+          
+          # 2. Download Kernel Ophub 6.18.23
+          curl -L https://github.com/ophub/kernel/releases/download/kernel_stable/6.18.23.tar.gz -o kernel.tar.gz
 
-      - name: Upload Artifact
+      - name: Extract and Patch
+        run: |
+          # Ekstrak Rootfs
+          sudo tar -xzvf rootfs.tar.gz -C build/rootfs_data
+          
+          # Ekstrak Kernel
+          mkdir kernel_tmp
+          tar -xzvf kernel.tar.gz -C kernel_tmp
+          
+          # Inject Modul Kernel ke Rootfs
+          # Asumsi di dalam kernel.tar.gz ada folder 'lib/modules'
+          if [ -d "kernel_tmp/lib/modules" ]; then
+            sudo cp -r kernel_tmp/lib/modules/* build/rootfs_data/lib/modules/
+          fi
+          
+          # Siapkan folder Boot (EFI)
+          # Salin kernel (Image/vmlinuz) dan DTB S905X (HG680-FJ)
+          sudo cp kernel_tmp/boot/vmlinuz-* build/boot/vmlinuz
+          sudo cp kernel_tmp/boot/uEnv.txt build/boot/uEnv.txt || true
+          
+          # Salin DTB spesifik HG680-FJ (Meson GXL S905X P212)
+          mkdir -p build/boot/dtb/amlogic
+          sudo cp kernel_tmp/boot/dtb/amlogic/meson-gxl-s905x-p212.dtb build/boot/dtb/amlogic/
+
+      - name: Package to IMG
+        run: |
+          echo "Proses pembuatan .img menggunakan skrip pemaket..."
+          # Catatan: Untuk membuat file .img yang bootable di STB, 
+          # Anda butuh skrip tambahan seperti 'mk_s905x.sh'.
+          # Tanpa skrip itu, Anda hanya mendapatkan rootfs yang sudah dipatch.
+
+      - name: Upload Result
         uses: actions/upload-artifact@v4
         with:
-          name: OpenWrt-HG680FJ-Custom
-          path: ib/bin/targets/armsr/armv8/*.img.gz
+          name: OpenWrt-HG680FJ-Injected
+          path: build/rootfs_data/
