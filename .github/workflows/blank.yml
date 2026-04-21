@@ -31,35 +31,35 @@ jobs:
       - name: Extract and Patch System
         run: |
           # 1. Ekstrak Rootfs OpenWrt
+          sudo mkdir -pv build/rootfs_data build/boot
           sudo tar -xzvf rootfs.tar.gz -C build/rootfs_data
           
           # 2. Ekstrak Bundle Kernel Utama
           mkdir -p kernel_raw
           tar -xzvf kernel_bundle.tar.gz -C kernel_raw
           
-          # 3. Ekstrak Sub-Paket (Struktur Ophub)
+          # 3. Ekstrak Sub-Paket
           mkdir -p kernel_unpacked/boot kernel_unpacked/modules kernel_unpacked/dtb
           tar -xzvf kernel_raw/6.18.23/boot-6.18.23-ophub.tar.gz -C kernel_unpacked/boot
           tar -xzvf kernel_raw/6.18.23/modules-6.18.23-ophub.tar.gz -C kernel_unpacked/modules
           tar -xzvf kernel_raw/6.18.23/dtb-amlogic-6.18.23-ophub.tar.gz -C kernel_unpacked/dtb
           
-          # 4. Sinkronisasi Kernel & DTB (Gunakan -pv untuk buat parent folder otomatis)
-          sudo mkdir -pv build/boot
-          
-          # Menyalin Kernel
+          # 4. Sinkronisasi Kernel & DTB
           sudo cp -v kernel_unpacked/boot/vmlinuz* build/boot/vmlinuz
           
-          # Menyalin DTB (Cari file secara rekursif agar tidak salah path)
           DTB_PATH=$(find kernel_unpacked/dtb -name "${{ env.DTB_NAME }}")
-          if [ -f "$DTB_PATH" ]; then
-            sudo cp -v "$DTB_PATH" build/boot/dtb.img
-          else
-            echo "ERROR: DTB file not found!" && exit 1
-          fi
+          sudo cp -v "$DTB_PATH" build/boot/dtb.img
           
-          # 5. Inject Modules ke Rootfs
-          sudo mkdir -pv build/rootfs_data/lib/modules
-          sudo cp -rv kernel_unpacked/modules/lib/modules/* build/rootfs_data/lib/modules/
+          # 5. Sinkronisasi Modules (DIPERBAIKI)
+          # Mencari folder 'lib/modules' di dalam kernel_unpacked/modules
+          MODULES_SRC=$(find kernel_unpacked/modules -type d -path "*/lib/modules" | head -n 1)
+          
+          if [ -d "$MODULES_SRC" ]; then
+            echo "Found modules at: $MODULES_SRC"
+            sudo cp -rv "$MODULES_SRC"/* build/rootfs_data/lib/modules/
+          else
+            echo "ERROR: Modules folder not found!" && exit 1
+          fi
           
           # 6. Buat uEnv.txt
           cat <<EOF | sudo tee build/boot/uEnv.txt
