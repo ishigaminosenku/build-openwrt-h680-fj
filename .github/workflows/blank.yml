@@ -1,81 +1,26 @@
-name: Build OpenWrt HG680-FJ (Final RootFS Fix)
-
-on:
-  workflow_dispatch:
-
-env:
-  IB_URL: https://downloads.openwrt.org/releases/25.12.2/targets/armsr/armv8/openwrt-imagebuilder-25.12.2-armsr-armv8.Linux-x86_64.tar.zst
-  KERNEL_URL: https://github.com/ophub/kernel/releases/download/kernel_stable/6.18.23.tar.gz
-  PACKAGES: "luci kmod-usb-net-asix-ax88179 kmod-usb-net-rtl8152 kmod-usb-storage kmod-fs-ext4 kmod-fs-vfat kmod-nls-cp437 kmod-nls-iso8859-1"
-
-jobs:
-  build:
-    runs-on: ubuntu-22.04
-    steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v4
-
-      - name: Install Dependencies
-        run: |
-          sudo apt update
-          sudo apt install -y build-essential zstd wget rsync gawk gettext libssl-dev qemu-utils
-
-      - name: Download & Extract Image Builder
-        run: |
-          wget $IB_URL -O ib.tar.zst
-          mkdir ib && tar -I zstd -xvf ib.tar.zst -C ib --strip-components=1
-
-      - name: Download & Prepare Custom Kernel
-        run: |
-          wget $KERNEL_URL -O kernel_main.tar.gz
-          mkdir kernel_tmp && tar -xvf kernel_main.tar.gz -C kernel_tmp --strip-components=1
-          mkdir -p kernel_final/boot kernel_final/modules kernel_final/dtb
-          tar -xvf kernel_tmp/boot-6.18.23-ophub.tar.gz -C kernel_final/boot
-          tar -xvf kernel_tmp/dtb-amlogic-6.18.23-ophub.tar.gz -C kernel_final/dtb
-          tar -xvf kernel_tmp/modules-6.18.23-ophub.tar.gz -C kernel_final/modules
-
-          mkdir -p ib/files/boot/dtb/amlogic
-          mkdir -p ib/files/lib/modules/6.18.23-ophub
-          cp -rf kernel_final/boot/* ib/files/boot/
-          cp -rf kernel_final/dtb/* ib/files/boot/dtb/amlogic/
-          cp -rf kernel_final/modules/* ib/files/lib/modules/6.18.23-ophub/
-
-      - name: Fix Permissions & Increase Partition Size
+- name: Build OpenWrt Image
         run: |
           cd ib
-          # Pastikan semua file di folder 'files' memiliki hak akses yang benar
-          chmod -R 755 files/
-          
-          # Paksa Image Builder memperbesar ukuran partisi ROOTFS agar kernel & modul muat (512MB)
-          sed -i 's/CONFIG_TARGET_ROOTFS_PARTSIZE=.*/CONFIG_TARGET_ROOTFS_PARTSIZE=512/g' .config || echo "CONFIG_TARGET_ROOTFS_PARTSIZE=512" >> .config
-          # Set kernel partition size (64MB)
-          sed -i 's/CONFIG_TARGET_KERNEL_PARTSIZE=.*/CONFIG_TARGET_KERNEL_PARTSIZE=64/g' .config || echo "CONFIG_TARGET_KERNEL_PARTSIZE=64" >> .config
-
-      - name: Create Boot Configuration (uEnv.txt)
-        run: |
-          cat <<EOF > ib/files/boot/uEnv.txt
-          LINUX=/boot/vmlinuz-6.18.23-ophub
-          INITRD=/boot/uInitrd
-          FDT=/boot/dtb/amlogic/meson-gxl-s905x-p212.dtb
-          APPEND=root=LABEL=ROOTFS rootwait console=ttyAML0,115200n8 console=tty0 no_console_suspend
-          EOF
-
-      - name: Build OpenWrt Image
-        run: |
-          cd ib
-          # Menambahkan entri manual ke .config untuk memastikan ukuran partisi diterapkan
-          echo "CONFIG_TARGET_ROOTFS_PARTSIZE=512" >> .config
+          # Kita pastikan ukuran partisi diatur ulang tepat sebelum eksekusi
+          sed -i 's/CONFIG_TARGET_ROOTFS_PARTSIZE=.*/CONFIG_TARGET_ROOTFS_PARTSIZE=512/g' .config
           make image PROFILE="generic" PACKAGES="$PACKAGES" FILES="files"
 
       - name: Prepare Artifacts
         run: |
-          mkdir output
-          find ib/bin/targets/armsr/armv8/ -name "*.img.gz" -exec cp {} output/ \;
+          mkdir -p output
+          # Mencari semua file image di dalam folder bin secara rekursif
+          find ib/bin/targets/armsr/armv8/ -type f \( -name "*.img*" -o -name "*.tar.gz" \) -exec cp {} output/ \;
+          
+          # List file yang ditemukan untuk pengecekan di log
+          ls -R output/
+          
+          # Ekstrak jika ada file .gz agar BalenaEtcher bisa langsung pakai
           cd output
-          if [ -f *.img.gz ]; then gunzip *.img.gz; fi
+          for f in *.gz; do [ -f "$f" ] && gunzip "$f"; done || true
 
       - name: Upload Flashable Image
         uses: actions/upload-artifact@v4
         with:
-          name: OpenWrt_HG680FJ_Basic_Stable
-          path: output/*.img
+          name: OpenWrt_HG680FJ_Result
+          # Gunakan path yang lebih luas agar pasti terangkat
+          path: output/*
