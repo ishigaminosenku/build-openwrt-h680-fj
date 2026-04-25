@@ -1,15 +1,12 @@
-name: Build OpenWrt HG680-FJ dengan Kernel 6.12.83 + Modem 4G
+name: Build OpenWrt HG680-FJ dengan Kernel 6.12.83 + Modem 4G + Multi-Partisi
 
 on:
   workflow_dispatch:
 
 env:
-  # ImageBuilder untuk build custom images
   IB_URL: https://downloads.openwrt.org/releases/25.12.2/targets/armsr/armv8/openwrt-imagebuilder-25.12.2-armsr-armv8.Linux-x86_64.tar.zst
-  # Kernel stabil versi 6.12.83
   KERNEL_URL: https://github.com/ophub/kernel/releases/download/kernel_stable/6.12.83.tar.gz
-  # Paket dasar stabil untuk STB + Modem 4G
-  PACKAGES: "luci kmod-usb-net-asix-ax88179 kmod-usb-net-rtl8152 kmod-usb-storage kmod-fs-ext4 kmod-fs-vfat kmod-nls-cp437 kmod-nls-iso8859-1 kmod-mii kmod-usb-net kmod-usb-wdm kmod-usb-net-qmi-wwan uqmi luci-proto-qmi kmod-usb-net-cdc-ether kmod-usb-serial-option kmod-usb-serial kmod-usb-serial-wwan qmi-utils kmod-usb-serial-qualcomm kmod-usb-acm kmod-usb-net-cdc-ncm kmod-usb-net-cdc-mbim umbim modemmanager luci-proto-modemmanager usbutils"
+  PACKAGES: "luci kmod-usb-net-asix-ax88179 kmod-usb-net-rtl8152 kmod-usb-storage kmod-fs-ext4 kmod-fs-vfat kmod-nls-cp437 kmod-nls-iso8859-1 kmod-mii kmod-usb-net kmod-usb-wdm kmod-usb-net-qmi-wwan qmi-utils uqmi comgt-ncm kmod-usb-serial kmod-usb-serial-option kmod-usb-acm jshn jq curl wget htop nano vim git openssh-sftp-server block-mount blkid mkf2fs e2fsprogs losetup resize2fs partx-utils"
 
 jobs:
   build:
@@ -21,7 +18,7 @@ jobs:
       - name: Install Dependencies
         run: |
           sudo apt update
-          sudo apt install -y build-essential zstd wget rsync gawk gettext libssl-dev qemu-utils
+          sudo apt install -y build-essential zstd wget rsync gawk gettext libssl-dev qemu-utils parted e2fsprogs dosfstools btrfs-progs
 
       - name: Download & Extract Image Builder
         run: |
@@ -32,27 +29,20 @@ jobs:
         run: |
           wget $KERNEL_URL -O kernel_main.tar.gz
           mkdir kernel_tmp && tar -xvf kernel_main.tar.gz -C kernel_tmp --strip-components=1
-          
-          # Ekstrak komponen kernel 6.12.83
           mkdir -p kernel_final/boot kernel_final/modules kernel_final/dtb
           tar -xvf kernel_tmp/boot-6.12.83-ophub.tar.gz -C kernel_final/boot
           tar -xvf kernel_tmp/dtb-amlogic-6.12.83-ophub.tar.gz -C kernel_final/dtb
           tar -xvf kernel_tmp/modules-6.12.83-ophub.tar.gz -C kernel_final/modules
-
-          # Membuat struktur folder 'files' untuk diinjeksi ke RootFS
           mkdir -p ib/files/boot/dtb/amlogic
           mkdir -p ib/files/lib/modules/6.12.83-ophub
-          
           cp -rf kernel_final/boot/* ib/files/boot/
           cp -rf kernel_final/dtb/* ib/files/boot/dtb/amlogic/
           cp -rf kernel_final/modules/* ib/files/lib/modules/6.12.83-ophub/
 
-      - name: Add Custom Package Repository (lrdrdn)
+      - name: Add Custom Package Repository
         run: |
           cd ib
           mkdir -p files/etc/opkg
-          
-          # Tentukan arsitektur CPU untuk H680-FJ (aarch64_cortex-a53)
           cat <<EOF > files/etc/opkg/distfeeds.conf
           src/gz openwrt_core https://downloads.openwrt.org/releases/25.12.2/targets/armsr/armv8/packages
           src/gz openwrt_base https://downloads.openwrt.org/releases/25.12.2/packages/aarch64_cortex-a53/base
@@ -60,54 +50,103 @@ jobs:
           src/gz openwrt_packages https://downloads.openwrt.org/releases/25.12.2/packages/aarch64_cortex-a53/packages
           src/gz openwrt_routing https://downloads.openwrt.org/releases/25.12.2/packages/aarch64_cortex-a53/routing
           src/gz openwrt_telephony https://downloads.openwrt.org/releases/25.12.2/packages/aarch64_cortex-a53/telephony
-          
           src/gz custom_generic https://raw.githubusercontent.com/lrdrdn/my-opkg-repo/main/generic
           src/gz custom_arch https://raw.githubusercontent.com/lrdrdn/my-opkg-repo/main/aarch64_cortex-a53
           EOF
 
-      - name: Configure Partition & Permissions
+      - name: Configure Rootfs
         run: |
           cd ib
-          # Beri izin akses penuh pada folder files agar tidak error saat build
           chmod -R 755 files/
-          
-          # Paksa ukuran partisi RootFS ke 512MB agar kernel & modul muat
-          echo "CONFIG_TARGET_ROOTFS_PARTSIZE=512" >> .config
-          echo "CONFIG_TARGET_KERNEL_PARTSIZE=64" >> .config
+          echo "CONFIG_TARGET_ROOTFS_SQUASHFS=y" >> .config
+          echo "CONFIG_TARGET_ROOTFS_EXT4=y" >> .config
 
-      - name: Create Boot Configuration (uEnv.txt)
+      - name: Create Boot Configuration
         run: |
-          # File ini wajib agar STB tahu file mana yang harus di-load saat boot
           cat <<EOF > ib/files/boot/uEnv.txt
           LINUX=/boot/vmlinuz-6.12.83-ophub
           INITRD=/boot/uInitrd
           FDT=/boot/dtb/amlogic/meson-gxl-s905x-p212.dtb
           APPEND=root=LABEL=ROOTFS rootwait console=ttyAML0,115200n8 console=tty0 no_console_suspend
           EOF
+          mkdir -p ib/files/etc
+          cat <<EOF > ib/files/etc/fstab
+          LABEL=ROOTFS /       ext4    rw,defaults             0  0
+          LABEL=OVERLAY /overlay ext4   rw,defaults            0  2
+          LABEL=FATBOOT /boot  vfat    ro,defaults             0  0
+          EOF
 
       - name: Build OpenWrt Image
         run: |
           cd ib
-          # Gunakan PROFILE generic karena armsr bersifat universal untuk armv8
           make image PROFILE="generic" PACKAGES="$PACKAGES" FILES="files"
 
-      - name: Prepare Artifacts
+      - name: Extract Image Components
         run: |
           mkdir -p output
-          # Mencari file hasil build di folder bin secara mendalam
-          find ib/bin/targets/armsr/armv8/ -type f \( -name "*.img*" -o -name "*.tar.gz" \) -exec cp {} output/ \;
-          
-          # Cek isi folder output di log GitHub Actions
-          echo "Daftar file yang ditemukan:"
-          ls -R output/
-          
-          # Ekstrak file .gz jika ada agar siap di-flash
+          find ib/bin/targets/armsr/armv8/ -type f \( -name "*rootfs*" -o -name "*squashfs*" \) -exec cp {} output/ \;
+          find ib/bin/targets/armsr/armv8/ -type f \( -name "*kernel*" -o -name "*uImage*" \) -exec cp {} output/ \;
+          ls -lh output/
+
+      - name: Create Multi-Partition Image
+        run: |
           cd output
-          for f in *.gz; do [ -f "$f" ] && gunzip "$f"; done || true
+          BOOT_SIZE=64
+          ROOTFS_SIZE=512
+          TOTAL_SIZE=$((BOOT_SIZE + ROOTFS_SIZE + 10))
+          
+          # Buat image
+          dd if=/dev/zero of=openwrt-h680fj-multipart.img bs=1M count=$TOTAL_SIZE
+          
+          # Setup loop
+          LOOP=$(sudo losetup -f)
+          sudo losetup $LOOP openwrt-h680fj-multipart.img
+          
+          # Buat partisi
+          sudo parted -s $LOOP mklabel msdos
+          sudo parted -s $LOOP mkpart primary fat32 0% ${BOOT_SIZE}MB
+          sudo parted -s $LOOP mkpart primary ext4 ${BOOT_SIZE}MB 100%
+          sudo parted -s $LOOP set 1 boot on
+          
+          # Format & mount
+          sudo partprobe $LOOP
+          sleep 2
+          
+          sudo mkfs.vfat -n "EMMC_BOOT" ${LOOP}p1
+          sudo mkfs.ext4 -L "ROOTFS" -F ${LOOP}p2
+          
+          BOOT_MNT=$(mktemp -d)
+          ROOTFS_MNT=$(mktemp -d)
+          
+          sudo mount ${LOOP}p1 $BOOT_MNT
+          sudo mount ${LOOP}p2 $ROOTFS_MNT
+          
+          # Copy kernel & DTB ke FAT boot
+          for f in *kernel* *uImage* *zImage* *dtb; do
+            [ -f "$f" ] && sudo cp "$f" $BOOT_MNT/
+          done
+          
+          # Extract rootfs
+          if ls *rootfs*.tar.gz 1>/dev/null 2>&1; then
+            sudo tar -xzf *rootfs*.tar.gz -C $ROOTFS_MNT
+          elif ls *squashfs* 1>/dev/null 2>&1; then
+            sudo unsquashfs -d $ROOTFS_MNT -f $(ls *squashfs* | head -1)
+          fi
+          
+          sudo umount $BOOT_MNT $ROOTFS_MNT
+          sudo losetup -d $LOOP
+          
+          ls -lh openwrt-h680fj-multipart.img
+          gzip -k openwrt-h680fj-multipart.img
+
+      - name: Verify Image
+        run: |
+          cd output
+          sudo fdisk -l openwrt-h680fj-multipart.img
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: OpenWrt_HG680FJ_4G_Modem
-          path: output/*
-          if-no-files-found: error
+          name: OpenWrt_HG680FJ_MultiPartition
+          path: output/openwrt-h680fj-multipart.img*
+          if-no-files-found: warn
