@@ -1,4 +1,4 @@
-name: Build OpenWrt HG680-FJ dengan Kernel 6.12.83
+name: Build OpenWrt HG680-FJ dengan Kernel 6.12.83 + Modem 4G
 
 on:
   workflow_dispatch:
@@ -8,8 +8,8 @@ env:
   IB_URL: https://downloads.openwrt.org/releases/25.12.2/targets/armsr/armv8/openwrt-imagebuilder-25.12.2-armsr-armv8.Linux-x86_64.tar.zst
   # Kernel stabil versi 6.12.83
   KERNEL_URL: https://github.com/ophub/kernel/releases/download/kernel_stable/6.12.83.tar.gz
-  # Paket dasar stabil untuk STB
-  PACKAGES: "luci kmod-usb-net-asix-ax88179 kmod-usb-net-rtl8152 kmod-usb-storage kmod-fs-ext4 kmod-fs-vfat kmod-nls-cp437 kmod-nls-iso8859-1"
+  # Paket dasar stabil untuk STB + Modem 4G
+  PACKAGES: "luci kmod-usb-net-asix-ax88179 kmod-usb-net-rtl8152 kmod-usb-storage kmod-fs-ext4 kmod-fs-vfat kmod-nls-cp437 kmod-nls-iso8859-1 kmod-mii kmod-usb-net kmod-usb-wdm kmod-usb-net-qmi-wwan uqmi luci-proto-qmi kmod-usb-net-cdc-ether kmod-usb-serial-option kmod-usb-serial kmod-usb-serial-wwan qmi-utils kmod-usb-serial-qualcomm kmod-usb-acm kmod-usb-net-cdc-ncm kmod-usb-net-cdc-mbim umbim modemmanager luci-proto-modemmanager usbutils luci-theme-argon"
 
 jobs:
   build:
@@ -46,6 +46,24 @@ jobs:
           cp -rf kernel_final/boot/* ib/files/boot/
           cp -rf kernel_final/dtb/* ib/files/boot/dtb/amlogic/
           cp -rf kernel_final/modules/* ib/files/lib/modules/6.12.83-ophub/
+
+      - name: Add Custom Package Repository (lrdrdn)
+        run: |
+          cd ib
+          mkdir -p files/etc/opkg
+          
+          # Tentukan arsitektur CPU untuk H680-FJ (aarch64_cortex-a53)
+          cat <<EOF > files/etc/opkg/distfeeds.conf
+          src/gz openwrt_core https://downloads.openwrt.org/releases/25.12.2/targets/armsr/armv8/packages
+          src/gz openwrt_base https://downloads.openwrt.org/releases/25.12.2/packages/aarch64_cortex-a53/base
+          src/gz openwrt_luci https://downloads.openwrt.org/releases/25.12.2/packages/aarch64_cortex-a53/luci
+          src/gz openwrt_packages https://downloads.openwrt.org/releases/25.12.2/packages/aarch64_cortex-a53/packages
+          src/gz openwrt_routing https://downloads.openwrt.org/releases/25.12.2/packages/aarch64_cortex-a53/routing
+          src/gz openwrt_telephony https://downloads.openwrt.org/releases/25.12.2/packages/aarch64_cortex-a53/telephony
+          
+          src/gz custom_generic https://raw.githubusercontent.com/lrdrdn/my-opkg-repo/main/generic
+          src/gz custom_arch https://raw.githubusercontent.com/lrdrdn/my-opkg-repo/main/aarch64_cortex-a53
+          EOF
 
       - name: Configure Partition & Permissions
         run: |
@@ -90,6 +108,6 @@ jobs:
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: OpenWrt_HG680FJ_Flashable
+          name: OpenWrt_HG680FJ_4G_Modem
           path: output/*
           if-no-files-found: error
