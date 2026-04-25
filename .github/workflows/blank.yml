@@ -1,11 +1,13 @@
-name: Build OpenWrt HG680-FJ (Final Version)
+name: Build OpenWrt HG680-FJ dengan Kernel 6.12.83
 
 on:
   workflow_dispatch:
 
 env:
+  # ImageBuilder untuk build custom images
   IB_URL: https://downloads.openwrt.org/releases/25.12.2/targets/armsr/armv8/openwrt-imagebuilder-25.12.2-armsr-armv8.Linux-x86_64.tar.zst
-  KERNEL_URL: https://github.com/ophub/kernel/releases/download/kernel_stable/6.18.23.tar.gz
+  # Kernel stabil versi 6.12.83
+  KERNEL_URL: https://github.com/ophub/kernel/releases/download/kernel_stable/6.12.83.tar.gz
   # Paket dasar stabil untuk STB
   PACKAGES: "luci kmod-usb-net-asix-ax88179 kmod-usb-net-rtl8152 kmod-usb-storage kmod-fs-ext4 kmod-fs-vfat kmod-nls-cp437 kmod-nls-iso8859-1"
 
@@ -26,23 +28,24 @@ jobs:
           wget $IB_URL -O ib.tar.zst
           mkdir ib && tar -I zstd -xvf ib.tar.zst -C ib --strip-components=1
 
-      - name: Download & Prepare Custom Kernel
+      - name: Download & Prepare Custom Kernel 6.12.83
         run: |
           wget $KERNEL_URL -O kernel_main.tar.gz
           mkdir kernel_tmp && tar -xvf kernel_main.tar.gz -C kernel_tmp --strip-components=1
           
+          # Ekstrak komponen kernel 6.12.83
           mkdir -p kernel_final/boot kernel_final/modules kernel_final/dtb
-          tar -xvf kernel_tmp/boot-6.18.23-ophub.tar.gz -C kernel_final/boot
-          tar -xvf kernel_tmp/dtb-amlogic-6.18.23-ophub.tar.gz -C kernel_final/dtb
-          tar -xvf kernel_tmp/modules-6.18.23-ophub.tar.gz -C kernel_final/modules
+          tar -xvf kernel_tmp/boot-6.12.83-ophub.tar.gz -C kernel_final/boot
+          tar -xvf kernel_tmp/dtb-amlogic-6.12.83-ophub.tar.gz -C kernel_final/dtb
+          tar -xvf kernel_tmp/modules-6.12.83-ophub.tar.gz -C kernel_final/modules
 
           # Membuat struktur folder 'files' untuk diinjeksi ke RootFS
           mkdir -p ib/files/boot/dtb/amlogic
-          mkdir -p ib/files/lib/modules/6.18.23-ophub
+          mkdir -p ib/files/lib/modules/6.12.83-ophub
           
           cp -rf kernel_final/boot/* ib/files/boot/
           cp -rf kernel_final/dtb/* ib/files/boot/dtb/amlogic/
-          cp -rf kernel_final/modules/* ib/files/lib/modules/6.18.23-ophub/
+          cp -rf kernel_final/modules/* ib/files/lib/modules/6.12.83-ophub/
 
       - name: Configure Partition & Permissions
         run: |
@@ -58,7 +61,7 @@ jobs:
         run: |
           # File ini wajib agar STB tahu file mana yang harus di-load saat boot
           cat <<EOF > ib/files/boot/uEnv.txt
-          LINUX=/boot/vmlinuz-6.18.23-ophub
+          LINUX=/boot/vmlinuz-6.12.83-ophub
           INITRD=/boot/uInitrd
           FDT=/boot/dtb/amlogic/meson-gxl-s905x-p212.dtb
           APPEND=root=LABEL=ROOTFS rootwait console=ttyAML0,115200n8 console=tty0 no_console_suspend
